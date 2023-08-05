@@ -1,0 +1,230 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creates an S3 bucket for hosting a Static HTML/CSS website
+Parameters:
+  QueueName:
+    Type: String
+    Default: vaidikSQS
+  SQSTriggerFunctionName:
+    Type: String
+    Default: sqsTriggerFunction
+  SNSTriggerFunctionName:
+    Type: String
+    Default: snsTriggerFunction
+  EventBridgeFunctionName:
+    Type: String
+    Default: eventBridgeFunction
+  SNSEmailName:
+    Type: String
+    Default: snsEmail
+  SNSDisplayName:
+    Type: String
+    Default: Employee Notification
+  EventBridgeSchedulerName:
+    Type: String
+    Default: CronJobSchedule
+  DynamoDBTableName:
+    Type: String
+    Default: dynamodb_cloud
+
+Resources:
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: "backend-frontend-sg"
+      GroupDescription: "EC2 Security group Backend and Frontend"
+      VpcId: vpc-0974c2d9404e55b68
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: "22"
+          ToPort: "22"
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: "3000"
+          ToPort: "3000"
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+  ElasticIPBackend:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref EC2Backend
+  EC2Backend:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-053b0d53c279acc90
+      InstanceType: t2.small
+      SubnetId: subnet-02470726bd822a4f9
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      KeyName: vockey
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+
+          cd /home/ubuntu
+
+          git clone https://nimavat:B00925420@git.cs.dal.ca/nimavat/mcp.git
+
+          sudo apt update -y
+          sudo apt install curl -y
+
+          sudo curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+          sudo apt install -y nodejs
+
+          sudo npm install pm2 -g
+
+          cd mcp/embackend
+          npm install
+
+          export BCRYPT_GEN_SALT_NUMBER=10
+          export TOKEN_EXPIRES=10d
+          export JWT_SECRET_KEY=cloud
+          export AWS_DEFAULT_REGION=us-east-1
+          export AWS_ACCESS_KEY_ID=ASIAZNV7T5PZR5RRV7MU
+          export AWS_SECRET_ACCESS_KEY=p+mJ889r2/rFf7Y8+xK8uPotmcfNNikpzAaaRySY
+          export AWS_SESSION_TOKEN=FwoGZXIvYXdzEEwaDA3rsDncw5JBiYhfaiK/AZ8pR6KQqmrvuZ2PXRF0ut2vt2L01S3quju3KdStiHoRsST/DXLYt1SkvoD/KDD3pbFqjL4idBve8P5QwGAZlq5/A4yqUviKwt09h/WCTbaTzFbwextVakWzCNQLHoNOgFIwlJAxMBdCWkK7hmUgNcPJgt++96geI4u9XH/jv5XOY4Bu/2uwh1kDPZ8D+p1xRedTn/xTSVmRoVRsrCW33KCeGkup03Qh0QIJ9zjUsyH7ixxGefEZSsWTItGn3OA2KN7Co6YGMi3EfHx+lRskImK6JzxIUgz3MF40xsvtKvuNZQGCrRLow3mgLcQwS2gp+obj3Rw=
+          export QUEUE_ARN=${MyQueue}
+          export SNS_ARN=${SNSEmail}
+          export TABLE_NAME=${DynamoDB}
+
+          sudo BCRYPT_GEN_SALT_NUMBER=$BCRYPT_GEN_SALT_NUMBER AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION TOKEN_EXPIRES=$TOKEN_EXPIRES JWT_SECRET_KEY=$JWT_SECRET_KEY AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN QUEUE_ARN=$QUEUE_ARN SNS_ARN=$SNS_ARN TABLE_NAME=$TABLE_NAME pm2 start app.js
+          sudo pm2 startup
+
+  ElasticIPFrontend:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref EC2Frontend
+  EC2Frontend:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-053b0d53c279acc90
+      InstanceType: t2.small
+      SubnetId: subnet-02470726bd822a4f9
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      KeyName: vockey
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+
+          cd /home/ubuntu
+
+          git clone https://nimavat:B00925420@git.cs.dal.ca/nimavat/mcp.git
+
+          sudo apt update -y
+          sudo apt install curl -y
+
+          sudo curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+          sudo apt install -y nodejs
+
+          sudo npm install pm2 -g
+
+          cd mcp/emfrontend
+          npm install
+
+          export REACT_APP_BACKEND_BASE_URL=http://${ElasticIPBackend}:3000/
+
+          sudo REACT_APP_BACKEND_BASE_URL=$REACT_APP_BACKEND_BASE_URL pm2 start "npm start"
+          sudo pm2 startup
+  CronJob:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Description: Sends the profile completion email
+      Name: !Ref EventBridgeSchedulerName
+      ScheduleExpression: "rate(5 minute)"
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt LambdaEventBridge.Arn
+        RoleArn: arn:aws:iam::647868181491:role/LabRole
+
+  MyQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref QueueName
+      ReceiveMessageWaitTimeSeconds: 5
+      VisibilityTimeout: 120
+
+  SNSEmail:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Ref SNSDisplayName
+      TopicName: !Ref SNSEmailName
+
+  LambdaFunctionSQSTrigger:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref SQSTriggerFunctionName
+      Code:
+        S3Bucket: cloud-project-code-vaidik
+        S3Key: sqs_trigger.zip
+      Environment:
+        Variables:
+          REGION: us-east-1
+          TABLE_NAME: !Ref DynamoDB
+      Handler: sqs_trigger.handler
+      Role: arn:aws:iam::647868181491:role/LabRole
+      Runtime: nodejs16.x
+      Timeout: 60
+      MemorySize: 512
+
+  LambdaEventBridge:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref EventBridgeFunctionName
+      Code:
+        S3Bucket: cloud-project-code-vaidik
+        S3Key: event_bridge.zip
+      Environment:
+        Variables:
+          SNS_ARN: !Ref SNSEmail
+      Handler: event_bridge.handler
+      Role: arn:aws:iam::647868181491:role/LabRole
+      Runtime: nodejs16.x
+      Timeout: 60
+      MemorySize: 512
+
+  LambdaFunctionEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 1
+      Enabled: true
+      EventSourceArn: !GetAtt MyQueue.Arn
+      FunctionName: !GetAtt LambdaFunctionSQSTrigger.Arn
+
+  DynamoDB:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: type
+          AttributeType: S
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: type
+          KeyType: HASH
+        - AttributeName: id
+          KeyType: RANGE
+      TableName: !Ref DynamoDBTableName
+
+Outputs:
+  BackendUrl:
+    Value: !Join
+      - ""
+      - - "http://"
+        - !GetAtt
+          - EC2Backend
+          - PublicIp
+        - ":3000"
+  FrontendUrl:
+    Value: !Join
+      - ""
+      - - "http://"
+        - !GetAtt
+          - EC2Frontend
+          - PublicIp
+        - ":3000"
